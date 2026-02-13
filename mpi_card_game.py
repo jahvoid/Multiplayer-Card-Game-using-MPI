@@ -29,7 +29,7 @@ class Dealer:
     # draw a new board card from deck
     def draw_board_card(self):
         self.current_card = self.deck.pop()
-        print(f"[Dealer] Board card: {self.current_card}")
+        print(f"[Dealer] New Board card: {self.current_card}")
     
     # simulate game round
     def play_round(self, comm):
@@ -55,7 +55,7 @@ class Dealer:
             # player card matched, set new board card
             if status == "play":
                 self.current_card = played_card
-                print(f"[Dealer] New Board card: {self.current_card}")
+                print(f"[Dealer] Updated Board card: {self.current_card}")
                 new_card = True
 
             # player has no more cards
@@ -68,7 +68,7 @@ class Dealer:
         for active in range(1, self.num_players + 1):
             comm.send("continue", dest=active)
 
-        # if no one has played new card is drawn
+        # if no one has played a card in the round, a new card is drawn from the deck
         if not new_card:
             self.draw_board_card()
 
