@@ -2,14 +2,10 @@ from mpi4py import MPI
 import random
 import time
 
-# Task 1: Game Setup - Yatharth
+# Assignment Task 1 - Game Setup - Yatharth Soni
 def create_deck():
-    """
-    Creates a standard 52-card deck.
-    Each card is represented as a tuple: (rank, suit).
-    The deck is shuffled before being returned.
-    """
     
+    #Creating the pack of cards
     ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
     suits = ['Hearts', 'Diamonds', 'Clubs', 'Spades']
 
@@ -115,6 +111,11 @@ class Dealer:
                 comm.send(drawn, dest=active)   # send card (or None if deck empty)
                 print(f"[Dealer] Player {active} draws: {drawn}", flush=True)
 
+                #All MPI send/receive calls are always paired. 
+                # Once the player requests draw and deck = empty, 
+                # the dealer first satisfies draw request, 
+                # then broadcasts an "end" message to all ranks before ending. 
+                # This guarantees no rank remains blocked on recv().
                 if drawn is None:
                     self.current_card = None
                     for p in range(1, self.num_players + 1):
@@ -182,14 +183,15 @@ def main():
         # Previous code -> dealer.deal_hands(comm)
         # Previous code -> dealer.draw_board_card()
 
-        # Added checks so dealer never crashes on empty deck; dealer broadcasts "end" to release players.
-        ok = dealer.deal_hands(comm)
-        if not ok:
+        # Checking if the dealer never crashes on empty deck; 
+        # dealer broadcasts "end" to release players.
+        valid = dealer.deal_hands(comm)
+        if not valid:
             print("Game Over!")
             return
 
-        ok = dealer.draw_board_card(comm)
-        if not ok:
+        valid = dealer.draw_board_card(comm)
+        if not valid:
             for p in range(1, dealer.num_players + 1):
                 comm.send("end", dest=p)
             print("Game Over!")
@@ -199,7 +201,7 @@ def main():
         # dealer game loop
         game_over = False
         while not game_over:
-            # check if deck is empty and end game if so - added to prevent deadlock - yatharth
+            # End game if deck is empty logic - Deadlock prevention
             game_over = dealer.play_round(comm)
         print("Game Over!")
         
@@ -213,6 +215,7 @@ def main():
         while True:
             msg = comm.recv(source=0)
 
+            #added end to stop if the deck is empty
             if msg in ("win", "end"):
                 break
 
@@ -225,14 +228,14 @@ def main():
                 played_card, status = player.take_turn(msg["board"])
                 comm.send((played_card, status), dest=0)
 
-                # If player drew a card, wait for the dealer to send the drawn card (or None if deck empty) and add it to hand.
+                # If player drew a card, wait for the dealer to send the drawn card (or None resulting into end if empty) and add it to hand.
                 # Added the draw functionality while preventing the deadlock - yatharth
                 if status == "draw":
                     drawn = comm.recv(source=0)
                     # If deck was empty, drawn will be None. In that case, we just don't add anything to the hand and continue.
                     if drawn is not None:
                         player.hand.append(drawn)
-                        print(f"[Player {rank}] Drew {drawn}. New hand size: {len(player.hand)}", flush=True)
+                        print(f"[Player {rank}] Drew {drawn}. Updated hand size: {len(player.hand)}", flush=True)
                     else:
                         print(f"[Player {rank}] Tried to draw but deck is empty.", flush=True)
 
