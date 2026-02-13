@@ -115,6 +115,12 @@ class Dealer:
                 comm.send(drawn, dest=active)   # send card (or None if deck empty)
                 print(f"[Dealer] Player {active} draws: {drawn}", flush=True)
 
+                if drawn is None:
+                    self.current_card = None
+                    for p in range(1, self.num_players + 1):
+                        comm.send("end", dest=p)
+                    return True
+
             # player has no more cards
             elif status == "win":
                 for i in range(1, self.num_players + 1):
