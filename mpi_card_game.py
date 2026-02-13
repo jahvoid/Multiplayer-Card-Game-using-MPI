@@ -33,8 +33,7 @@ class Dealer:
     
     # simulate game round
     def play_round(self, comm):
-        self.draw_board_card()
-
+        new_card = False
         # run through all player turns
         for active in range(1, self.num_players + 1):
 
@@ -56,6 +55,8 @@ class Dealer:
             # player card matched, set new board card
             if status == "play":
                 self.current_card = played_card
+                print(f"[Dealer] New Board card: {self.current_card}")
+                new_card = True
 
             # player has no more cards
             elif status == "win":
@@ -66,6 +67,10 @@ class Dealer:
         # No winner, tell all players to continue
         for active in range(1, self.num_players + 1):
             comm.send("continue", dest=active)
+
+        # if no one has played new card is drawn
+        if not new_card:
+            self.draw_board_card()
 
         return False
 
@@ -96,6 +101,7 @@ def main():
         deck = create_deck()
         dealer = Dealer(size -1, deck)
         dealer.deal_hands(comm)
+        dealer.draw_board_card()
 
         # dealer game loop
         game_over = False
