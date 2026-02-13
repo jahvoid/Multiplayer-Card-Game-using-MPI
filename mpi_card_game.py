@@ -56,11 +56,16 @@ class Dealer:
         return True
     
     # draw a new board card from deck
-    def draw_board_card(self):
+    #Added comm=None -> allows this function to be called from play_round without passing comm, while still allowing it to send "end" messages if the deck is empty. - yatharth
+    def draw_board_card(self, comm=None):
         # Added to prevent deadlock - yatharth
         if not self.deck:
             self.current_card = None
             print("[Dealer] Deck empty. Ending game.")
+            # If deck is empty, send "end" message to all players to prevent them from blocking on recv() and allow clean termination.
+            if comm is not None:
+                for p in range(1, self.num_players + 1):
+                    comm.send("end", dest=p)
             return False
         self.current_card = self.deck.pop()
         print(f"[Dealer] New Board card: {self.current_card}")
@@ -102,6 +107,14 @@ class Dealer:
                 print(f"[Dealer] Updated Board card: {self.current_card}")
                 new_card = True
 
+            #Adding draw functionality and preventing deadlock - yatharth
+            # If player needs to draw, dealer sends one card from the deck (or None if deck empty).
+            elif status == "draw":
+                # Dealer owns the deck, so dealer draws and sends 1 card to the active player
+                drawn = self.deck.pop() if self.deck else None
+                comm.send(drawn, dest=active)   # send card (or None if deck empty)
+                print(f"[Dealer] Player {active} draws: {drawn}", flush=True)
+
             # player has no more cards
             elif status == "win":
                 for i in range(1, self.num_players + 1):
@@ -115,7 +128,7 @@ class Dealer:
         # if no one has played a card in the round, a new card is drawn from the deck
         # Added to prevent deadlock - yatharth
         if not new_card:
-            ok = self.draw_board_card()
+            ok = self.draw_board_card(comm)
             if not ok:
                 for p in range(1, self.num_players + 1):
                     comm.send("end", dest=p)
@@ -143,8 +156,9 @@ class Player:
 
                 return card, "play"
 
-        # No match
-        return board_card, "pass"
+        # No match -> request a draw from the dealer
+        #Adding Draw Functionality and preventing deadlock - yatharth
+        return board_card, "draw"
 
 
 # Task 4: Ensure Deadlock Prevention and MPI Termination - Yatharth
@@ -168,7 +182,7 @@ def main():
             print("Game Over!")
             return
 
-        ok = dealer.draw_board_card()
+        ok = dealer.draw_board_card(comm)
         if not ok:
             for p in range(1, dealer.num_players + 1):
                 comm.send("end", dest=p)
@@ -204,5 +218,16 @@ def main():
             if msg["active"]:
                 played_card, status = player.take_turn(msg["board"])
                 comm.send((played_card, status), dest=0)
+
+                # If player drew a card, wait for the dealer to send the drawn card (or None if deck empty) and add it to hand.
+                # Added the draw functionality while preventing the deadlock - yatharth
+                if status == "draw":
+                    drawn = comm.recv(source=0)
+                    # If deck was empty, drawn will be None. In that case, we just don't add anything to the hand and continue.
+                    if drawn is not None:
+                        player.hand.append(drawn)
+                        print(f"[Player {rank}] Drew {drawn}. New hand size: {len(player.hand)}", flush=True)
+                    else:
+                        print(f"[Player {rank}] Tried to draw but deck is empty.", flush=True)
 
 main()
