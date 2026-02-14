@@ -1,134 +1,246 @@
 from mpi4py import MPI
 import random
+import time
 
-
-#Initializing MPI communicator for all process
-comm = MPI.COMM_WORLD
-
-rank = comm.Get_rank() 
-
-
-"""
-    Searches the player's hand for a card that matches
-    the rank of the current board card.
-
-    Parameters:
-    hand (list): list of cards held by the player
-    board_card (tuple): current card on the board (rank, suit)
-
-    Returns:
-    tuple: matching card if found
-    None: if no matching card exists
-    """
+# Assignment Task 1 - Game Setup - Yatharth Soni
+def create_deck():
     
-def find_matching_card(hand, board_card):
-    board_rank = board_card[0]
+    #Creating the pack of cards
+    ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+    suits = ['Hearts', 'Diamonds', 'Clubs', 'Spades']
 
-    #Checks for each card in player's hand
-    for card in hand:
-        if card[0] == board_rank:
-            return card
-    return None
+    deck = []
 
-#Player logic for task 3 and 5
-def player_logic():
+    # Manually building the card deck
+    for suit in suits:
+        for rank in ranks:
+            deck.append((rank, suit))
 
-    """
-    Implements behavior for all player processes (rank != 0).
+    random.shuffle(deck)
 
-    Player responsibilities:
-    - Receive initial hand from dealer
-    - Wait for turn signal from dealer
-    - Play matching card if possible
-    - Request card from dealer if no match
-    - Send game status back to dealer
-    - Terminate when dealer signals game end
-    """
+    return deck
 
+# Task 2: Dealer logic - Miyuki
+class Dealer:
+    def __init__(self, num_players, deck):
+        self.num_players = num_players
+        self.deck = deck
+        self.current_card = None
+        self.player = 1
 
-    #Dealer send message containing player's starting cards
-    data = comm.recv(source=0)
+    # deal 4 cards from deck to each player
+    def deal_hands(self, comm, cards_per_player=4):
+        
+        # Check if there are enough cards to deal to all players - Added to prevent deadlock - yatharth
+        required = self.num_players * cards_per_player
 
-    if data['type'] != "init":
-        return 
+        # If not enough cards, end game immediately by sending "end" message to all players
+        if len(self.deck) < required:
+            print(f"[Dealer] Not enough cards to deal: need {required}, have {len(self.deck)}. Ending.")
+            for p in range(1, self.num_players + 1):
+                comm.send("end", dest=p)
+            return False
+
+        # Deal cards to each player
+        for p in range(1, self.num_players + 1):
+            # Previous version could crash if the deck ran out (pop from empty list),
+            # which would leave other ranks blocked on recv(). Added deck-size check to terminate cleanly.
+            # Previous code -> hand = [self.deck.pop() for _ in range(4)]
+
+            hand = [self.deck.pop() for _ in range(cards_per_player)]
+            comm.send(hand, dest=p)
+        return True
     
-    hand = data["hand"]
-    print(f"Player {rank} received hand: {hand}")
+    # draw a new board card from deck
+    #Added comm=None -> allows this function to be called from play_round without passing comm, while still allowing it to send "end" messages if the deck is empty. - yatharth
+    def draw_board_card(self, comm=None):
+        # Added to prevent deadlock - yatharth
+        if not self.deck:
+            self.current_card = None
+            print("[Dealer] Deck empty. Ending game.")
+            # If deck is empty, send "end" message to all players to prevent them from blocking on recv() and allow clean termination.
+            if comm is not None:
+                for p in range(1, self.num_players + 1):
+                    comm.send("end", dest=p)
+            return False
+        self.current_card = self.deck.pop()
+        print(f"[Dealer] New Board card: {self.current_card}")
+        return True
+    
+    # simulate game round
+    def play_round(self, comm):
+        # If deck is empty and no one has won, end game
+        if self.current_card is None:
+            for p in range(1, self.num_players + 1):
+                comm.send("end", dest=p)
+            return True
+
+        new_card = False
+        # run through all player turns
+        # Dealer sends one turn message to every player.
+        # Only the active player replies (exactly one send), matching recv(source=active) below.
+
+        for active in range(1, self.num_players + 1):
+
+            # Send turn info to ALL players
+            for p in range(1, self.num_players + 1):
+                comm.send(
+                    {
+                        "active": (p == active),
+                        "board": self.current_card
+                    },
+                    dest=p
+                )
+
+            # Recieve player turn response
+            played_card, status = comm.recv(source=active)
+            print(f"[Dealer] Player {active} status: {status}", flush=True)
+            time.sleep(0.1)
+
+            # player card matched, set new board card
+            if status == "play":
+                self.current_card = played_card
+                print(f"[Dealer] Updated Board card: {self.current_card}")
+                new_card = True
+
+            #Adding draw functionality and preventing deadlock - yatharth
+            # If player needs to draw, dealer sends one card from the deck (or None if deck empty).
+            elif status == "draw":
+                # Dealer owns the deck, so dealer draws and sends 1 card to the active player
+                drawn = self.deck.pop() if self.deck else None
+                comm.send(drawn, dest=active)   # send card (or None if deck empty)
+                print(f"[Dealer] Player {active} draws: {drawn}", flush=True)
+
+                #All MPI send/receive calls are always paired. 
+                # Once the player requests draw and deck = empty, 
+                # the dealer first satisfies draw request, 
+                # then broadcasts an "end" message to all ranks before ending. 
+                # This guarantees no rank remains blocked on recv().
+                if drawn is None:
+                    self.current_card = None
+                    for p in range(1, self.num_players + 1):
+                        comm.send("end", dest=p)
+                    return True
+
+            # player has no more cards
+            elif status == "win":
+                for i in range(1, self.num_players + 1):
+                    comm.send("win", dest=i)
+                return True
+
+        # No winner, tell all players to continue
+        for active in range(1, self.num_players + 1):
+            comm.send("continue", dest=active)
+
+        # if no one has played a card in the round, a new card is drawn from the deck
+        # Added to prevent deadlock - yatharth
+        if not new_card:
+            ok = self.draw_board_card(comm)
+            if not ok:
+                for p in range(1, self.num_players + 1):
+                    comm.send("end", dest=p)
+                return True 
+
+        return False
+
+# Task 3: Player Logic - Jayna
+class Player:
+    def __init__(self, rank):
+        self.rank = rank
+        self.hand = []
+
+    def take_turn(self, board_card):
+        board_rank = board_card[0]
+
+        # Find the first matching rank card
+        for card in self.hand:
+            if card[0] == board_rank:
+                self.hand.remove(card)
+
+                print(f"[Player {self.rank}] Plays {card}", flush=True)
+
+                # If hand empty after playing, player wins
+                if len(self.hand) == 0:
+                    print(f"[Player {self.rank}] !!! WINS !!!", flush=True)
+                    return card, "win"
+
+                return card, "play"
+
+        # No match -> request a draw from the dealer
+        #Adding Draw Functionality and preventing deadlock - yatharth
+        print(f"[Player {self.rank}] No match — requesting draw.", flush=True)
+        return None, "draw"
 
 
-    #Player continuous awaits dealer instructions
-    while True:
-        message = comm.recv(source=0)
-
-
-        # Terminiation logic
-        if message["type"] == "terminate" :
-            print(f"Player {rank} terminating.")
-            break
-
-        if message["type"] == "turn": 
-
-            #Dealer sends the current board card
-            board_card = message["board"]
-            print(f"Player {rank} turn. Board card: {board_card}")
-
-            #Find matching card in player's hand
-            match = find_matching_card(hand, board_card)
-
-        #Play card if match exists
-            if match:
-                #Removes card from player's hand
-                hand.remove(match)
-
-                print(f"Player {rank} plays {match}")
-
-        #Checks if player wins
-                if len(hand) == 0:
-                    #Notify dealer that player has won
-                    comm.send({"status": "wins", "card" : match}, dest=0)
-                    print(f"Player {rank}  !!!WINS!!!")
-                    break
-                
-                #Send played card to dealer
-                comm.send({"status": "played", "card": match}, dest=0)
-
-
-        #Logic is no matching card is found, player should draw from deck
-        else: 
-            print(f"Player {rank} cannot play. ")
-            print("Requesting card....")
-
-            # Inform dealer that player cannot play
-            # Dealer will respond with a card from deck
-            comm.send({"status": "pass"}, dest=0)
-
-    #Recieve drawn card from dealer
-            draw_msg = comm.recv(source=0)
-
-            # Dealer sends card using message type "draw_card"
-            if draw_msg["type"] == "draw_card":
-                drawn_card = draw_msg["card"]
-
-            # Add card to hand if deck is not empty
-                if drawn_card is not None:
-                    hand.append(drawn_card)
-                    print("Player {rank} drew {drawn_card}")
-
-                else:
-                    print(f"Player {rank} cannot draw, the deck is empty.")
-            # End turn after drawing 
-            comm.send({"status":"pass"}, dest=0)
-
-
+# Task 4: Ensure Deadlock Prevention and MPI Termination - Yatharth
 def main():
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
+
     if rank == 0:
-        pass
+        # create/initialize dealer for rank 0
+        deck = create_deck()
+        dealer = Dealer(size -1, deck)
+        
+        #Previous code caused deadlock due to multiple pops from the deck - yatharth
+        # Previous code -> dealer.deal_hands(comm)
+        # Previous code -> dealer.draw_board_card()
 
+        # Checking if the dealer never crashes on empty deck; 
+        # dealer broadcasts "end" to release players.
+        valid = dealer.deal_hands(comm)
+        if not valid:
+            print("Game Over!")
+            return
+
+        valid = dealer.draw_board_card(comm)
+        if not valid:
+            for p in range(1, dealer.num_players + 1):
+                comm.send("end", dest=p)
+            print("Game Over!")
+            return
+
+
+        # dealer game loop
+        game_over = False
+        while not game_over:
+            # End game if deck is empty logic - Deadlock prevention
+            game_over = dealer.play_round(comm)
+        print("Game Over!")
+        
     else:
-        player_logic()
+        # create player for all other ranks
+        player = Player(rank)
+        player.hand = comm.recv(source=0)
+        print (f"[Player {rank}] Hand recieved: {player.hand}", flush=True)
+
+        # player game loop
+        while True:
+            msg = comm.recv(source=0)
+
+            #added end to stop if the deck is empty
+            if msg in ("win", "end"):
+                break
 
 
-if __name__ == "__main__":
-    main()
-   
+            if msg == "continue":
+                continue
 
+            # play only on players turn
+            if msg["active"]:
+                played_card, status = player.take_turn(msg["board"])
+                comm.send((played_card, status), dest=0)
+
+                # If player drew a card, wait for the dealer to send the drawn card (or None resulting into end if empty) and add it to hand.
+                # Added the draw functionality while preventing the deadlock - yatharth
+                if status == "draw":
+                    drawn = comm.recv(source=0)
+                    # If deck was empty, drawn will be None. In that case, we just don't add anything to the hand and continue.
+                    if drawn is not None:
+                        player.hand.append(drawn)
+                        print(f"[Player {rank}] Drew {drawn}. Updated hand size: {len(player.hand)}", flush=True)
+                    else:
+                        print(f"[Player {rank}] Tried to draw but deck is empty.", flush=True)
+
+main()
